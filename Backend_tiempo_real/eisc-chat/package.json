@@ -2,7 +2,7 @@
   "name": "eisc-chat",
   "version": "0.1.0",
   "scripts": {
-    "dev": "tsx watch api/index.ts",
+    "dev": "tsx --watch api/index.ts",
     "build": "tsc",
     "start": "node dist/index.js"
   },
