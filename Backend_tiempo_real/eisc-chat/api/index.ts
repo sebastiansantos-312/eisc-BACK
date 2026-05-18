@@ -14,8 +14,13 @@ const io = new Server({
 
 const port = Number(process.env.PORT);
 
-io.listen(port);
-console.log(`Server is running on port ${port}`);
+try {
+  io.listen(port);
+  console.log(`Server is running on port ${port}`);
+  }
+ catch (error) {
+  console.error(error);
+}
 
 type OnlineUser = { socketId: string; userId: string };
 type ChatMessagePayload = {

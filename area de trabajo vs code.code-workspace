@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../FRONT/eisc-meet"
+		},
+		{
+			"path": "Backend_tiempo_real/eisc-chat"
+		},
+		{
+			"path": "Backend_principal/eisc-video"
+		}
+	],
+	"settings": {}
+}
