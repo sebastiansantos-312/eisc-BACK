@@ -29,6 +29,7 @@ const openApiDocument = {
     { name: "Health", description: "Estado del backend desplegado" },
     { name: "Auth", description: "Flujos documentados de Firebase Auth" },
     { name: "Firestore", description: "Modelos y colecciones de Firestore" },
+    { name: "Rooms", description: "Flujos documentados de creacion y acceso a salas" },
     { name: "Sockets", description: "Eventos Socket.io para presencia, salas y chat" },
   ],
   paths: {
@@ -143,6 +144,78 @@ const openApiDocument = {
         },
       },
     },
+    "/rooms": {
+      post: {
+        tags: ["Rooms"],
+        summary: "US-06 Crear sala de estudio",
+        description:
+          "Flujo documentado: el cliente crea rooms/{roomId}, genera roomCode, agrega ownerId a participantIds y registra rooms/{roomId}/participants/{uid}.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/CreateRoomRequest" },
+            },
+          },
+        },
+        responses: {
+          "201": {
+            description: "Sala creada",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/Room" },
+              },
+            },
+          },
+          "401": { description: "Usuario no autenticado" },
+        },
+      },
+      get: {
+        tags: ["Rooms"],
+        summary: "Listar salas donde participa el usuario",
+        description:
+          "Consulta Firestore rooms con participantIds array-contains uid para mostrar salas propias y salas unidas.",
+        responses: {
+          "200": {
+            description: "Listado de salas",
+            content: {
+              "application/json": {
+                schema: { type: "array", items: { $ref: "#/components/schemas/Room" } },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/rooms/{roomIdOrCode}/join": {
+      post: {
+        tags: ["Rooms"],
+        summary: "Unirse a sala por ID o codigo",
+        description:
+          "Flujo documentado: busca una sala por document ID o roomCode, valida cupo y agrega el uid a participantIds y participants/{uid}.",
+        parameters: [{ name: "roomIdOrCode", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/JoinRoomRequest" },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Usuario unido a la sala",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/Room" },
+              },
+            },
+          },
+          "404": { description: "Sala no encontrada" },
+          "409": { description: "Sala llena" },
+        },
+      },
+    },
     "/socket.io": {
       get: {
         tags: ["Sockets"],
@@ -214,6 +287,41 @@ const openApiDocument = {
           uid: { type: "string" },
           username: { type: "string" },
           createdAt: { type: "string", format: "date-time" },
+        },
+      },
+      CreateRoomRequest: {
+        type: "object",
+        required: ["ownerId", "name", "subject", "maxParticipants"],
+        properties: {
+          ownerId: { type: "string" },
+          name: { type: "string", example: "Repaso de estructuras de datos" },
+          subject: { type: "string", example: "Ciencias de la computacion" },
+          description: { type: "string", example: "Sesion para resolver ejercicios antes del parcial." },
+          maxParticipants: { type: "number", minimum: 2, maximum: 50, example: 8 },
+        },
+      },
+      JoinRoomRequest: {
+        type: "object",
+        required: ["uid"],
+        properties: {
+          uid: { type: "string" },
+        },
+      },
+      Room: {
+        type: "object",
+        required: ["id", "roomCode", "ownerId", "name", "subject", "status", "maxParticipants", "participantIds"],
+        properties: {
+          id: { type: "string" },
+          roomCode: { type: "string", example: "A1B2C3D4" },
+          ownerId: { type: "string" },
+          name: { type: "string" },
+          subject: { type: "string" },
+          description: { type: "string" },
+          status: { type: "string", enum: ["active", "scheduled"] },
+          maxParticipants: { type: "number" },
+          participantIds: { type: "array", items: { type: "string" } },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
         },
       },
     },
