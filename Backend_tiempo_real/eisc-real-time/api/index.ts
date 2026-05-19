@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { Server, type Socket } from "socket.io";
 import "dotenv/config";
 
@@ -10,16 +11,284 @@ const origins = (process.env.ORIGIN ? process.env.ORIGIN.split(",") : defaultOri
   .map(s => s.trim())
   .filter(Boolean);
 
-const io = new Server({
+const port = Number(process.env.PORT ?? 3000);
+
+const openApiDocument = {
+  openapi: "3.0.3",
+  info: {
+    title: "EISC Meet Back API Docs",
+    version: "1.0.0",
+    description:
+      "Documentacion desplegada en Render para los flujos de Sprint 1 con Firebase Auth/Firestore y la infraestructura Socket.io de Sprint 2.",
+  },
+  servers: [
+    { url: "https://eisc-back.onrender.com", description: "Render production" },
+    { url: `http://localhost:${port}`, description: "Local development" },
+  ],
+  tags: [
+    { name: "Health", description: "Estado del backend desplegado" },
+    { name: "Auth", description: "Flujos documentados de Firebase Auth" },
+    { name: "Firestore", description: "Modelos y colecciones de Firestore" },
+    { name: "Sockets", description: "Eventos Socket.io para presencia, salas y chat" },
+  ],
+  paths: {
+    "/health": {
+      get: {
+        tags: ["Health"],
+        summary: "Verifica que el backend esta activo",
+        responses: {
+          "200": {
+            description: "Servidor activo",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/HealthResponse" },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/openapi.json": {
+      get: {
+        tags: ["Health"],
+        summary: "Documento OpenAPI usado por Swagger UI",
+        responses: {
+          "200": { description: "OpenAPI JSON" },
+        },
+      },
+    },
+    "/auth/register-manual": {
+      post: {
+        tags: ["Auth"],
+        summary: "US-01 Registro manual",
+        description:
+          "Flujo documentado: el cliente crea usuario en Firebase Auth, valida username unico y guarda el perfil en Firestore users/{uid}.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/RegisterManualRequest" },
+            },
+          },
+        },
+        responses: {
+          "201": { description: "Usuario creado y persistido en Firestore" },
+          "409": { description: "Username o correo ocupado" },
+        },
+      },
+    },
+    "/auth/google": {
+      post: {
+        tags: ["Auth"],
+        summary: "US-02 Registro/Login con Google",
+        description:
+          "Flujo documentado: Firebase autentica con Google; en primer ingreso se crea perfil base y se exige completar username.",
+        responses: {
+          "200": { description: "Perfil existente o perfil base creado" },
+        },
+      },
+    },
+    "/auth/login": {
+      post: {
+        tags: ["Auth"],
+        summary: "US-03 Inicio de sesion",
+        description:
+          "Flujo documentado: Firebase Auth valida credenciales y el front carga users/{uid} para permitir acceso al dashboard.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/LoginRequest" },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Sesion iniciada y perfil cargado" },
+          "401": { description: "Credenciales invalidas" },
+        },
+      },
+    },
+    "/firestore/users/{uid}": {
+      get: {
+        tags: ["Firestore"],
+        summary: "Modelo users/{uid}",
+        parameters: [{ name: "uid", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          "200": {
+            description: "Perfil de usuario",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/UserData" },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/firestore/usernames/{username}": {
+      get: {
+        tags: ["Firestore"],
+        summary: "Modelo usernames/{username}",
+        description: "Indice usado para bloquear usernames duplicados.",
+        parameters: [{ name: "username", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          "200": {
+            description: "Reserva de username",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/UsernameReservation" },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/socket.io": {
+      get: {
+        tags: ["Sockets"],
+        summary: "Endpoint tecnico de Socket.io",
+        description:
+          "Socket.io usa este endpoint para handshake y transporte. Los eventos documentados son newUser, usersOnline, room:join, room:leave, room:users y chat:message.",
+        responses: {
+          "200": { description: "Handshake o transporte Socket.io" },
+        },
+      },
+    },
+  },
+  components: {
+    schemas: {
+      HealthResponse: {
+        type: "object",
+        properties: {
+          status: { type: "string", example: "ok" },
+          service: { type: "string", example: "eisc-real-time" },
+          sockets: { type: "string", example: "enabled" },
+        },
+      },
+      RegisterManualRequest: {
+        type: "object",
+        required: ["firstName", "lastName", "username", "email", "password"],
+        properties: {
+          firstName: { type: "string", example: "Sebastian" },
+          lastName: { type: "string", example: "Lopez" },
+          username: { type: "string", example: "sebas_lopez", pattern: "^[a-z0-9_]{3,20}$" },
+          email: { type: "string", format: "email", example: "sebas@example.com" },
+          password: { type: "string", minLength: 6, example: "secret123" },
+        },
+      },
+      LoginRequest: {
+        type: "object",
+        required: ["email", "password"],
+        properties: {
+          email: { type: "string", format: "email" },
+          password: { type: "string", minLength: 6 },
+        },
+      },
+      UserData: {
+        type: "object",
+        required: ["uid", "email"],
+        properties: {
+          uid: { type: "string" },
+          firstName: { type: "string" },
+          lastName: { type: "string" },
+          username: { type: "string" },
+          name: { type: "string", nullable: true },
+          email: { type: "string", nullable: true },
+          photoURL: { type: "string", nullable: true },
+          provider: { type: "string", enum: ["password", "google"] },
+          profileCompleted: { type: "boolean" },
+          bio: { type: "string" },
+          university: { type: "string" },
+          major: { type: "string" },
+          year: { type: "string" },
+          studyHours: { type: "number" },
+          sessionsJoined: { type: "number" },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
+        },
+      },
+      UsernameReservation: {
+        type: "object",
+        required: ["uid", "username"],
+        properties: {
+          uid: { type: "string" },
+          username: { type: "string" },
+          createdAt: { type: "string", format: "date-time" },
+        },
+      },
+    },
+  },
+};
+
+const docsHtml = `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EISC Meet API Docs</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+  <style>
+    body { margin: 0; background: #f8fafc; }
+    .topbar { display: none; }
+    .swagger-ui .info { margin: 32px 0; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.addEventListener("load", () => {
+      SwaggerUIBundle({
+        url: "/openapi.json",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: "BaseLayout"
+      });
+    });
+  </script>
+</body>
+</html>`;
+
+const sendJson = (response: import("node:http").ServerResponse, statusCode: number, payload: unknown) => {
+  response.writeHead(statusCode, {
+    "content-type": "application/json; charset=utf-8",
+    "access-control-allow-origin": "*",
+  });
+  response.end(JSON.stringify(payload, null, 2));
+};
+
+const httpServer = createServer((request, response) => {
+  const url = new URL(request.url ?? "/", `http://${request.headers.host ?? `localhost:${port}`}`);
+  const pathname = url.pathname.replace(/\/+$/, "") || "/";
+
+  if (pathname === "/health") {
+    sendJson(response, 200, { status: "ok", service: "eisc-real-time", sockets: "enabled" });
+    return;
+  }
+
+  if (pathname === "/openapi.json") {
+    sendJson(response, 200, openApiDocument);
+    return;
+  }
+
+  if (pathname === "/" || pathname === "/docs") {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(docsHtml);
+    return;
+  }
+
+  sendJson(response, 404, { error: "Not found" });
+});
+
+const io = new Server(httpServer, {
   cors: {
     origin: origins
   }
 });
 
-const port = Number(process.env.PORT ?? 3000);
-
 try {
-  io.listen(port);
+  httpServer.listen(port);
   console.log(`Server is running on port ${port}`);
   }
  catch (error) {
