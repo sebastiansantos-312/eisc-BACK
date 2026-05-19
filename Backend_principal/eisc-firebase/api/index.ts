@@ -14,6 +14,7 @@ const openApiDocument = {
   tags: [
     { name: "Auth", description: "Flujos de registro/login en Firebase Auth" },
     { name: "Firestore", description: "Colecciones principales de Sprint 1" },
+    { name: "Rooms", description: "Modelo y flujos base de salas de Sprint 2" },
   ],
   paths: {
     "/health": {
@@ -116,6 +117,57 @@ const openApiDocument = {
         },
       },
     },
+    "/rooms": {
+      post: {
+        tags: ["Rooms"],
+        summary: "Crear sala de estudio",
+        description: "Cliente autenticado crea rooms/{roomId} en Firestore con ownerId, nombre, materia, descripcion y cupo maximo.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/CreateRoomRequest" },
+            },
+          },
+        },
+        responses: {
+          "201": {
+            description: "Sala creada",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Room" } } },
+          },
+          "401": { description: "Usuario no autenticado" },
+        },
+      },
+      get: {
+        tags: ["Rooms"],
+        summary: "Listar salas propias",
+        description: "Consulta Firestore rooms filtrando por ownerId igual al uid autenticado.",
+        responses: {
+          "200": {
+            description: "Listado de salas del usuario",
+            content: {
+              "application/json": {
+                schema: { type: "array", items: { $ref: "#/components/schemas/Room" } },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/rooms/{roomId}": {
+      get: {
+        tags: ["Rooms"],
+        summary: "Obtener sala por ID",
+        parameters: [{ name: "roomId", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          "200": {
+            description: "Detalle de sala",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Room" } } },
+          },
+          "404": { description: "Sala inexistente" },
+        },
+      },
+    },
   },
   components: {
     schemas: {
@@ -181,6 +233,33 @@ const openApiDocument = {
           createdAt: { type: "string", format: "date-time" },
         },
       },
+      CreateRoomRequest: {
+        type: "object",
+        required: ["ownerId", "name", "subject", "maxParticipants"],
+        properties: {
+          ownerId: { type: "string" },
+          name: { type: "string", example: "Data Structures Review" },
+          subject: { type: "string", example: "Computer Science" },
+          description: { type: "string", example: "Review linked lists and trees before the quiz." },
+          maxParticipants: { type: "number", minimum: 2, maximum: 50, example: 8 },
+        },
+      },
+      Room: {
+        type: "object",
+        required: ["id", "ownerId", "name", "subject", "status", "maxParticipants", "participantIds"],
+        properties: {
+          id: { type: "string" },
+          ownerId: { type: "string" },
+          name: { type: "string" },
+          subject: { type: "string" },
+          description: { type: "string" },
+          status: { type: "string", enum: ["active", "scheduled"] },
+          maxParticipants: { type: "number" },
+          participantIds: { type: "array", items: { type: "string" } },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
+        },
+      },
     },
   },
 };
@@ -206,12 +285,13 @@ const docsHtml = `<!doctype html>
   <main>
     <h1>EISC Meet Firebase/Auth Docs</h1>
     <p>Backend principal de documentacion para Sprint 1. La app real de Auth corre desde <code>eisc-meet</code> contra Firebase Auth y Firestore.</p>
-    <p><a href="/health">/health</a> · <a href="/openapi.json">/openapi.json</a></p>
+    <p><a href="/health">/health</a> Â· <a href="/openapi.json">/openapi.json</a></p>
     <section>
       <h2>Colecciones Firestore</h2>
       <ul>
         <li><code>users/{uid}</code>: perfil persistente del usuario.</li>
         <li><code>usernames/{username}</code>: indice para bloquear usernames duplicados.</li>
+        <li><code>rooms/{roomId}</code>: salas creadas por usuarios autenticados.</li>
       </ul>
     </section>
     <section>
@@ -220,6 +300,7 @@ const docsHtml = `<!doctype html>
         <li>Registro manual: Firebase Auth + reserva username + <code>users/{uid}</code>.</li>
         <li>Google: crea perfil base y exige completar username.</li>
         <li>Login: carga perfil y protege rutas privadas.</li>
+        <li>Salas Sprint 2: crear sala, listar salas propias y abrir sala por ID.</li>
       </ul>
     </section>
     <section>

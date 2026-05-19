@@ -1,8 +1,12 @@
 import { Server, type Socket } from "socket.io";
 import "dotenv/config";
 
-const origins = (process.env.ORIGIN ?? "")
-  .split(",")
+const defaultOrigins = [
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "http://localhost:5175",
+];
+const origins = (process.env.ORIGIN ? process.env.ORIGIN.split(",") : defaultOrigins)
   .map(s => s.trim())
   .filter(Boolean);
 
@@ -12,7 +16,7 @@ const io = new Server({
   }
 });
 
-const port = Number(process.env.PORT);
+const port = Number(process.env.PORT ?? 3000);
 
 try {
   io.listen(port);
@@ -28,8 +32,20 @@ type ChatMessagePayload = {
   message: string;
   timestamp?: string;
 };
+type RoomPayload = {
+  roomId?: string;
+  userId?: string;
+};
 
 let onlineUsers: OnlineUser[] = [];
+const roomUsers = new Map<string, OnlineUser[]>();
+
+const emitRoomUsers = (roomId: string) => {
+  io.to(roomId).emit("room:users", {
+    roomId,
+    users: roomUsers.get(roomId) ?? [],
+  });
+};
 
 io.on("connection", (socket: Socket) => {
   onlineUsers.push({ socketId: socket.id, userId: "" });
@@ -89,8 +105,50 @@ io.on("connection", (socket: Socket) => {
     );
   });
 
+  socket.on("room:join", (payload: RoomPayload) => {
+    const roomId = payload?.roomId?.trim();
+    const userId = payload?.userId?.trim();
+
+    if (!roomId || !userId) {
+      socket.emit("room:error", { message: "roomId and userId are required." });
+      return;
+    }
+
+    socket.join(roomId);
+
+    const currentRoomUsers = roomUsers.get(roomId) ?? [];
+    const nextRoomUsers = [
+      ...currentRoomUsers.filter(user => user.userId !== userId && user.socketId !== socket.id),
+      { socketId: socket.id, userId },
+    ];
+
+    roomUsers.set(roomId, nextRoomUsers);
+    emitRoomUsers(roomId);
+    console.log("User joined room:", roomId, "user:", userId);
+  });
+
+  socket.on("room:leave", (payload: RoomPayload) => {
+    const roomId = payload?.roomId?.trim();
+
+    if (!roomId) {
+      return;
+    }
+
+    socket.leave(roomId);
+
+    const nextRoomUsers = (roomUsers.get(roomId) ?? []).filter(user => user.socketId !== socket.id);
+    roomUsers.set(roomId, nextRoomUsers);
+    emitRoomUsers(roomId);
+    console.log("User left room:", roomId, "socket:", socket.id);
+  });
+
   socket.on("disconnect", () => {
     onlineUsers = onlineUsers.filter(user => user.socketId !== socket.id);
+    for (const [roomId, users] of roomUsers.entries()) {
+      const nextRoomUsers = users.filter(user => user.socketId !== socket.id);
+      roomUsers.set(roomId, nextRoomUsers);
+      emitRoomUsers(roomId);
+    }
     io.emit("usersOnline", onlineUsers);
     console.log(
       "A user disconnected with id: ",
