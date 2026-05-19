@@ -4,10 +4,13 @@
 			"path": "../FRONT/eisc-meet"
 		},
 		{
-			"path": "Backend_tiempo_real/eisc-chat"
+			"path": "Backend_tiempo_real/eisc-real-time"
 		},
 		{
-			"path": "Backend_principal/eisc-video"
+			"path": "Backend_principal/eisc-firebase"
+		},
+		{
+			"path": "../FRONT/Collaborative Study Room App"
 		}
 	],
 	"settings": {}

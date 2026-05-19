@@ -1,8 +1,8 @@
 {
-  "name": "eisc-video",
+  "name": "eisc-real-time",
   "version": "0.1.0",
   "scripts": {
-    "dev": "tsx watch api/index.ts",
+    "dev": "tsx --watch api/index.ts",
     "build": "tsc",
     "start": "node dist/index.js"
   },
@@ -10,7 +10,6 @@
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^17.2.2",
-    "simple-peer": "^9.11.1",
     "socket.io": "^4.8.1"
   },
   "devDependencies": {
