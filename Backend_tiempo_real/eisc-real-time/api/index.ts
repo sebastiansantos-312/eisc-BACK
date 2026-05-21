@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { Server, type Socket } from "socket.io";
 import "dotenv/config";
+import { admin } from "./config/firebaseAdmin.js";
 
 const defaultOrigins = [
   "http://localhost:5173",
@@ -395,6 +396,23 @@ const io = new Server(httpServer, {
   }
 });
 
+io.use(async (socket, next) => {
+  const token = socket.handshake.auth?.token;
+
+  if (!token || typeof token !== "string") {
+    next(new Error("No autorizado"));
+    return;
+  }
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    socket.data.uid = decoded.uid;
+    next();
+  } catch {
+    next(new Error("No autorizado"));
+  }
+});
+
 try {
   httpServer.listen(port);
   console.log(`Server is running on port ${port}`);
@@ -405,13 +423,11 @@ try {
 
 type OnlineUser = { socketId: string; userId: string };
 type ChatMessagePayload = {
-  userId: string;
   message: string;
   timestamp?: string;
 };
 type RoomPayload = {
   roomId?: string;
-  userId?: string;
 };
 
 let onlineUsers: OnlineUser[] = [];
@@ -425,7 +441,12 @@ const emitRoomUsers = (roomId: string) => {
 };
 
 io.on("connection", (socket: Socket) => {
-  onlineUsers.push({ socketId: socket.id, userId: "" });
+  const uid = String(socket.data.uid ?? "");
+
+  onlineUsers = [
+    ...onlineUsers.filter(user => user.userId !== uid && user.socketId !== socket.id),
+    { socketId: socket.id, userId: uid },
+  ];
   io.emit("usersOnline", onlineUsers);
   console.log(
     "A user connected with id: ",
@@ -435,8 +456,8 @@ io.on("connection", (socket: Socket) => {
     " online users"
   );
 
-  socket.on("newUser", (userId: string) => {
-    if (!userId) {
+  socket.on("newUser", () => {
+    if (!uid) {
       return;
     }
 
@@ -445,12 +466,12 @@ io.on("connection", (socket: Socket) => {
     );
 
     if (existingUserIndex !== -1) {
-      onlineUsers[existingUserIndex] = { socketId: socket.id, userId };
-    } else if (!onlineUsers.some(user => user.userId === userId)) {
-      onlineUsers.push({ socketId: socket.id, userId });
+      onlineUsers[existingUserIndex] = { socketId: socket.id, userId: uid };
+    } else if (!onlineUsers.some(user => user.userId === uid)) {
+      onlineUsers.push({ socketId: socket.id, userId: uid });
     } else {
       onlineUsers = onlineUsers.map(user =>
-        user.userId === userId ? { socketId: socket.id, userId } : user
+        user.userId === uid ? { socketId: socket.id, userId: uid } : user
       );
     }
 
@@ -468,7 +489,7 @@ io.on("connection", (socket: Socket) => {
       onlineUsers.find(user => user.socketId === socket.id) ?? null;
 
     const outgoingMessage = {
-      userId: payload.userId || sender?.userId || socket.id,
+      userId: sender?.userId || uid,
       message: trimmedMessage,
       timestamp: payload.timestamp ?? new Date().toISOString()
     };
@@ -484,10 +505,9 @@ io.on("connection", (socket: Socket) => {
 
   socket.on("room:join", (payload: RoomPayload) => {
     const roomId = payload?.roomId?.trim();
-    const userId = payload?.userId?.trim();
 
-    if (!roomId || !userId) {
-      socket.emit("room:error", { message: "roomId and userId are required." });
+    if (!roomId || !uid) {
+      socket.emit("room:error", { message: "roomId is required." });
       return;
     }
 
@@ -495,13 +515,13 @@ io.on("connection", (socket: Socket) => {
 
     const currentRoomUsers = roomUsers.get(roomId) ?? [];
     const nextRoomUsers = [
-      ...currentRoomUsers.filter(user => user.userId !== userId && user.socketId !== socket.id),
-      { socketId: socket.id, userId },
+      ...currentRoomUsers.filter(user => user.userId !== uid && user.socketId !== socket.id),
+      { socketId: socket.id, userId: uid },
     ];
 
     roomUsers.set(roomId, nextRoomUsers);
     emitRoomUsers(roomId);
-    console.log("User joined room:", roomId, "user:", userId);
+    console.log("User joined room:", roomId, "user:", uid);
   });
 
   socket.on("room:leave", (payload: RoomPayload) => {
