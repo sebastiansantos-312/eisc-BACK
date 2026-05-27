@@ -9,6 +9,7 @@ const router = Router();
 const roomsCollection = db.collection("rooms");
 
 const roomCode = () => Math.random().toString(36).slice(2, 8).toUpperCase();
+const messagesLimit = 100;
 
 const findRoomRef = async (roomIdOrCode: string) => {
   const directRef = roomsCollection.doc(roomIdOrCode);
@@ -93,7 +94,9 @@ router.get("/", async (request, response) => {
   });
 
   response.json(
-    [...rooms.values()].sort((left, right) => String(right.createdAt ?? "").localeCompare(String(left.createdAt ?? ""))),
+    [...rooms.values()]
+      .filter((room) => room.status !== "closed")
+      .sort((left, right) => String(right.createdAt ?? "").localeCompare(String(left.createdAt ?? ""))),
   );
 });
 
@@ -121,6 +124,93 @@ router.get("/:roomId", async (request, response) => {
   }
 
   response.json(mapDoc({ id: snapshot.id, data: () => room }));
+});
+
+router.put("/:roomId", async (request, response) => {
+  const uid = request.user?.uid;
+  const roomRef = roomsCollection.doc(request.params.roomId);
+  const snapshot = await roomRef.get();
+
+  if (!uid) {
+    response.status(401).json({ error: "No autorizado" });
+    return;
+  }
+
+  if (!snapshot.exists) {
+    response.status(404).json({ error: "Sala no encontrada" });
+    return;
+  }
+
+  const room = snapshot.data() ?? {};
+
+  if (room.ownerId !== uid) {
+    response.status(403).json({ error: "Solo el anfitrion puede editar esta sala." });
+    return;
+  }
+
+  if (room.status === "closed") {
+    response.status(409).json({ error: "Esta sala ya fue eliminada." });
+    return;
+  }
+
+  const name = String(request.body?.name ?? "").trim();
+  const subject = String(request.body?.subject ?? "").trim();
+  const description = String(request.body?.description ?? "").trim();
+  const maxParticipants = Math.min(Math.max(Number(request.body?.maxParticipants) || Number(room.maxParticipants ?? 8), 2), 50);
+
+  if (!name || !subject) {
+    response.status(400).json({ error: "La sala necesita nombre y materia." });
+    return;
+  }
+
+  const participantIds = Array.isArray(room.participantIds) ? room.participantIds : [];
+
+  if (maxParticipants < participantIds.length) {
+    response.status(400).json({ error: "El maximo no puede ser menor que los participantes actuales." });
+    return;
+  }
+
+  await roomRef.update({
+    name,
+    subject,
+    description,
+    maxParticipants,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  const updatedSnapshot = await roomRef.get();
+  response.json(mapDoc({ id: updatedSnapshot.id, data: () => updatedSnapshot.data() ?? {} }));
+});
+
+router.get("/:roomId/messages", async (request, response) => {
+  const uid = request.user?.uid;
+  const roomRef = roomsCollection.doc(request.params.roomId);
+  const snapshot = await roomRef.get();
+
+  if (!uid) {
+    response.status(401).json({ error: "No autorizado" });
+    return;
+  }
+
+  if (!snapshot.exists) {
+    response.status(404).json({ error: "Sala no encontrada" });
+    return;
+  }
+
+  const room = snapshot.data() ?? {};
+
+  if (!isParticipant(room, uid)) {
+    response.status(403).json({ error: "No tienes acceso a esta sala" });
+    return;
+  }
+
+  const messagesSnapshot = await roomRef
+    .collection("messages")
+    .orderBy("createdAt", "desc")
+    .limit(messagesLimit)
+    .get();
+
+  response.json(messagesSnapshot.docs.map(mapDoc).reverse());
 });
 
 router.post("/:roomId/join", async (request, response) => {

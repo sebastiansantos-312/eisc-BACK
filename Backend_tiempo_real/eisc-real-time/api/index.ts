@@ -1,7 +1,8 @@
 import { createServer } from "node:http";
 import { Server, type Socket } from "socket.io";
 import "dotenv/config";
-import { admin } from "./config/firebaseAdmin.js";
+import { FieldValue } from "firebase-admin/firestore";
+import { admin, db } from "./config/firebaseAdmin.js";
 
 const defaultOrigins = [
   "http://localhost:5173",
@@ -222,7 +223,7 @@ const openApiDocument = {
         tags: ["Sockets"],
         summary: "Endpoint tecnico de Socket.io",
         description:
-          "Socket.io usa este endpoint para handshake y transporte. Los eventos documentados son newUser, usersOnline, room:join, room:leave, room:users y chat:message.",
+          "Socket.io usa este endpoint para handshake y transporte. Los eventos documentados son newUser, usersOnline, room:join, room:leave, room:users, room:closed, chat:message y chat:error. chat:message requiere { roomId, message }, guarda el mensaje en Firestore y emite solo a los usuarios de la misma sala. room:closed notifica a los participantes cuando el anfitrion elimina/cierra la sala.",
         responses: {
           "200": { description: "Handshake o transporte Socket.io" },
         },
@@ -423,6 +424,7 @@ try {
 
 type OnlineUser = { socketId: string; userId: string };
 type ChatMessagePayload = {
+  roomId?: string;
   message: string;
   timestamp?: string;
 };
@@ -478,29 +480,58 @@ io.on("connection", (socket: Socket) => {
     io.emit("usersOnline", onlineUsers);
   });
 
-  socket.on("chat:message", (payload: ChatMessagePayload) => {
+  socket.on("chat:message", async (payload: ChatMessagePayload) => {
+    const roomId = payload?.roomId?.trim();
     const trimmedMessage = payload?.message?.trim();
 
-    if (!trimmedMessage) {
+    if (!roomId || !trimmedMessage || !uid) {
+      socket.emit("chat:error", { message: "roomId y message son requeridos." });
       return;
     }
 
-    const sender =
-      onlineUsers.find(user => user.socketId === socket.id) ?? null;
+    try {
+      const roomRef = db.collection("rooms").doc(roomId);
+      const roomSnapshot = await roomRef.get();
 
-    const outgoingMessage = {
-      userId: sender?.userId || uid,
-      message: trimmedMessage,
-      timestamp: payload.timestamp ?? new Date().toISOString()
-    };
+      if (!roomSnapshot.exists) {
+        socket.emit("chat:error", { message: "Sala no encontrada." });
+        return;
+      }
 
-    io.emit("chat:message", outgoingMessage);
-    console.log(
-      "Relayed chat message from: ",
-      outgoingMessage.userId,
-      " message: ",
-      outgoingMessage.message
-    );
+      const room = roomSnapshot.data() ?? {};
+      const participantIds = Array.isArray(room.participantIds) ? room.participantIds.map(String) : [];
+
+      if (room.ownerId !== uid && !participantIds.includes(uid)) {
+        socket.emit("chat:error", { message: "No tienes acceso a esta sala." });
+        return;
+      }
+
+      const messageRef = roomRef.collection("messages").doc();
+      const createdAt = FieldValue.serverTimestamp();
+
+      await messageRef.set({
+        roomId,
+        senderId: uid,
+        message: trimmedMessage,
+        createdAt,
+      });
+
+      const savedMessage = await messageRef.get();
+      const savedData = savedMessage.data() ?? {};
+      const outgoingMessage = {
+        id: savedMessage.id,
+        roomId,
+        senderId: uid,
+        message: trimmedMessage,
+        createdAt: savedData.createdAt?.toDate?.().toISOString?.() ?? new Date().toISOString(),
+      };
+
+      io.to(roomId).emit("chat:message", outgoingMessage);
+      console.log("Relayed room chat message:", roomId, "from:", uid);
+    } catch (error) {
+      console.error("Unable to persist chat message:", error);
+      socket.emit("chat:error", { message: "No se pudo enviar el mensaje." });
+    }
   });
 
   socket.on("room:join", (payload: RoomPayload) => {
@@ -537,6 +568,38 @@ io.on("connection", (socket: Socket) => {
     roomUsers.set(roomId, nextRoomUsers);
     emitRoomUsers(roomId);
     console.log("User left room:", roomId, "socket:", socket.id);
+  });
+
+  socket.on("room:closed", async (payload: RoomPayload) => {
+    const roomId = payload?.roomId?.trim();
+
+    if (!roomId || !uid) {
+      socket.emit("room:error", { message: "roomId is required." });
+      return;
+    }
+
+    try {
+      const roomSnapshot = await db.collection("rooms").doc(roomId).get();
+
+      if (!roomSnapshot.exists) {
+        socket.emit("room:error", { message: "Sala no encontrada." });
+        return;
+      }
+
+      const room = roomSnapshot.data() ?? {};
+
+      if (room.ownerId !== uid) {
+        socket.emit("room:error", { message: "Solo el anfitrion puede cerrar esta sala." });
+        return;
+      }
+
+      io.to(roomId).emit("room:closed", { roomId });
+      roomUsers.delete(roomId);
+      console.log("Room closed notification emitted:", roomId, "by:", uid);
+    } catch (error) {
+      console.error("Unable to emit room closed notification:", error);
+      socket.emit("room:error", { message: "No se pudo notificar el cierre de la sala." });
+    }
   });
 
   socket.on("disconnect", () => {

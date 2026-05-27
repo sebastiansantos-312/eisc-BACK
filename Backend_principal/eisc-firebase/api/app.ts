@@ -27,9 +27,11 @@ export const openApiDocument = {
     },
     "/api/rooms/{roomId}": {
       get: { summary: "Obtener sala" },
+      put: { summary: "Editar sala como anfitrion" },
       delete: { summary: "Cerrar sala" },
     },
     "/api/rooms/{roomId}/join": { post: { summary: "Unirse a sala por ID o codigo" } },
+    "/api/rooms/{roomId}/messages": { get: { summary: "Listar historial de mensajes de una sala" } },
   },
 };
 
