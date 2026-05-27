@@ -8,9 +8,6 @@
 		},
 		{
 			"path": "Backend_principal/eisc-firebase"
-		},
-		{
-			"path": "../FRONT/Collaborative Study Room App"
 		}
 	],
 	"settings": {}

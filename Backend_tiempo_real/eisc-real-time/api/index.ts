@@ -223,7 +223,7 @@ const openApiDocument = {
         tags: ["Sockets"],
         summary: "Endpoint tecnico de Socket.io",
         description:
-          "Socket.io usa este endpoint para handshake y transporte. Los eventos documentados son newUser, usersOnline, room:join, room:leave, room:users, room:closed, chat:message y chat:error. chat:message requiere { roomId, message }, guarda el mensaje en Firestore y emite solo a los usuarios de la misma sala. room:closed notifica a los participantes cuando el anfitrion elimina/cierra la sala.",
+          "Socket.io usa este endpoint para handshake y transporte. Los eventos documentados son newUser, usersOnline, room:join, room:leave, room:users, room:closed, chat:message, chat:error, webrtc:offer, webrtc:answer, webrtc:ice-candidate y webrtc:peer-left. chat:message requiere { roomId, message }, guarda el mensaje en Firestore y emite solo a los usuarios de la misma sala. room:closed notifica a los participantes cuando el anfitrion elimina/cierra la sala. Los eventos WebRTC transfieren ofertas SDP, respuestas SDP y candidatos ICE entre sockets de la misma sala.",
         responses: {
           "200": { description: "Handshake o transporte Socket.io" },
         },
@@ -422,7 +422,7 @@ try {
   console.error(error);
 }
 
-type OnlineUser = { socketId: string; userId: string };
+type OnlineUser = { socketId: string; userId: string; displayName?: string; avatar?: string; isMuted?: boolean; isVideoOff?: boolean };
 type ChatMessagePayload = {
   roomId?: string;
   message: string;
@@ -430,16 +430,47 @@ type ChatMessagePayload = {
 };
 type RoomPayload = {
   roomId?: string;
+  displayName?: string;
+  avatar?: string;
+};
+type RoomOccupancyWatchPayload = {
+  roomIds?: string[];
+};
+type MediaStatePayload = {
+  roomId?: string;
+  isMuted?: boolean;
+  isVideoOff?: boolean;
+};
+type WebRtcSignalPayload = {
+  roomId?: string;
+  targetSocketId?: string;
+  offer?: unknown;
+  answer?: unknown;
+  candidate?: unknown;
 };
 
 let onlineUsers: OnlineUser[] = [];
 const roomUsers = new Map<string, OnlineUser[]>();
 
+const sanitizePresenceField = (value: unknown, maxLength: number) => {
+  return typeof value === "string" ? value.trim().slice(0, maxLength) || undefined : undefined;
+};
+
 const emitRoomUsers = (roomId: string) => {
+  const users = roomUsers.get(roomId) ?? [];
+
   io.to(roomId).emit("room:users", {
     roomId,
-    users: roomUsers.get(roomId) ?? [],
+    users,
   });
+  io.emit("room:occupancy", { roomId, count: users.length });
+};
+
+const getRoomOccupancySnapshot = (roomIds: string[]) => {
+  return roomIds.reduce<Record<string, number>>((snapshot, roomId) => {
+    snapshot[roomId] = roomUsers.get(roomId)?.length ?? 0;
+    return snapshot;
+  }, {});
 };
 
 io.on("connection", (socket: Socket) => {
@@ -536,6 +567,8 @@ io.on("connection", (socket: Socket) => {
 
   socket.on("room:join", (payload: RoomPayload) => {
     const roomId = payload?.roomId?.trim();
+    const displayName = sanitizePresenceField(payload?.displayName, 80);
+    const avatar = sanitizePresenceField(payload?.avatar, 8);
 
     if (!roomId || !uid) {
       socket.emit("room:error", { message: "roomId is required." });
@@ -547,12 +580,17 @@ io.on("connection", (socket: Socket) => {
     const currentRoomUsers = roomUsers.get(roomId) ?? [];
     const nextRoomUsers = [
       ...currentRoomUsers.filter(user => user.userId !== uid && user.socketId !== socket.id),
-      { socketId: socket.id, userId: uid },
+      { socketId: socket.id, userId: uid, displayName, avatar, isMuted: true, isVideoOff: true },
     ];
 
     roomUsers.set(roomId, nextRoomUsers);
     emitRoomUsers(roomId);
     console.log("User joined room:", roomId, "user:", uid);
+  });
+
+  socket.on("room:occupancy:watch", (payload: RoomOccupancyWatchPayload) => {
+    const roomIds = Array.isArray(payload?.roomIds) ? payload.roomIds.map(String).filter(Boolean) : [];
+    socket.emit("room:occupancy:snapshot", { rooms: getRoomOccupancySnapshot(roomIds) });
   });
 
   socket.on("room:leave", (payload: RoomPayload) => {
@@ -568,6 +606,34 @@ io.on("connection", (socket: Socket) => {
     roomUsers.set(roomId, nextRoomUsers);
     emitRoomUsers(roomId);
     console.log("User left room:", roomId, "socket:", socket.id);
+  });
+
+  socket.on("room:media-state", (payload: MediaStatePayload) => {
+    const roomId = payload?.roomId?.trim();
+
+    if (!roomId || !uid) {
+      return;
+    }
+
+    const nextRoomUsers = (roomUsers.get(roomId) ?? []).map(user => {
+      if (user.socketId !== socket.id) return user;
+
+      return {
+        ...user,
+        isMuted: Boolean(payload.isMuted),
+        isVideoOff: Boolean(payload.isVideoOff),
+      };
+    });
+
+    roomUsers.set(roomId, nextRoomUsers);
+    socket.to(roomId).emit("room:media-state", {
+      roomId,
+      fromSocketId: socket.id,
+      fromUserId: uid,
+      isMuted: Boolean(payload.isMuted),
+      isVideoOff: Boolean(payload.isVideoOff),
+    });
+    emitRoomUsers(roomId);
   });
 
   socket.on("room:closed", async (payload: RoomPayload) => {
@@ -602,12 +668,63 @@ io.on("connection", (socket: Socket) => {
     }
   });
 
+  socket.on("webrtc:offer", (payload: WebRtcSignalPayload) => {
+    const roomId = payload?.roomId?.trim();
+    const targetSocketId = payload?.targetSocketId?.trim();
+
+    if (!roomId || !targetSocketId || !payload.offer) {
+      socket.emit("webrtc:error", { message: "Oferta WebRTC incompleta." });
+      return;
+    }
+
+    socket.to(targetSocketId).emit("webrtc:offer", {
+      roomId,
+      fromSocketId: socket.id,
+      fromUserId: uid,
+      offer: payload.offer,
+    });
+  });
+
+  socket.on("webrtc:answer", (payload: WebRtcSignalPayload) => {
+    const roomId = payload?.roomId?.trim();
+    const targetSocketId = payload?.targetSocketId?.trim();
+
+    if (!roomId || !targetSocketId || !payload.answer) {
+      socket.emit("webrtc:error", { message: "Respuesta WebRTC incompleta." });
+      return;
+    }
+
+    socket.to(targetSocketId).emit("webrtc:answer", {
+      roomId,
+      fromSocketId: socket.id,
+      fromUserId: uid,
+      answer: payload.answer,
+    });
+  });
+
+  socket.on("webrtc:ice-candidate", (payload: WebRtcSignalPayload) => {
+    const roomId = payload?.roomId?.trim();
+    const targetSocketId = payload?.targetSocketId?.trim();
+
+    if (!roomId || !targetSocketId || !payload.candidate) {
+      return;
+    }
+
+    socket.to(targetSocketId).emit("webrtc:ice-candidate", {
+      roomId,
+      fromSocketId: socket.id,
+      fromUserId: uid,
+      candidate: payload.candidate,
+    });
+  });
+
   socket.on("disconnect", () => {
     onlineUsers = onlineUsers.filter(user => user.socketId !== socket.id);
     for (const [roomId, users] of roomUsers.entries()) {
       const nextRoomUsers = users.filter(user => user.socketId !== socket.id);
       roomUsers.set(roomId, nextRoomUsers);
       emitRoomUsers(roomId);
+      io.to(roomId).emit("webrtc:peer-left", { roomId, socketId: socket.id, userId: uid });
     }
     io.emit("usersOnline", onlineUsers);
     console.log(
