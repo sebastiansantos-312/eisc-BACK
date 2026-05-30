@@ -41,7 +41,7 @@ router.post("/", async (request, response) => {
   const name = String(request.body?.name ?? "").trim();
   const subject = String(request.body?.subject ?? "").trim();
   const description = String(request.body?.description ?? "").trim();
-  const maxParticipants = Math.min(Math.max(Number(request.body?.maxParticipants) || 8, 2), 50);
+  const maxParticipants = 0;
 
   if (!name || !subject) {
     response.status(400).json({ error: "La sala necesita nombre y materia." });
@@ -156,17 +156,10 @@ router.put("/:roomId", async (request, response) => {
   const name = String(request.body?.name ?? "").trim();
   const subject = String(request.body?.subject ?? "").trim();
   const description = String(request.body?.description ?? "").trim();
-  const maxParticipants = Math.min(Math.max(Number(request.body?.maxParticipants) || Number(room.maxParticipants ?? 8), 2), 50);
+  const maxParticipants = 0;
 
   if (!name || !subject) {
     response.status(400).json({ error: "La sala necesita nombre y materia." });
-    return;
-  }
-
-  const participantIds = Array.isArray(room.participantIds) ? room.participantIds : [];
-
-  if (maxParticipants < participantIds.length) {
-    response.status(400).json({ error: "El maximo no puede ser menor que los participantes actuales." });
     return;
   }
 
@@ -238,7 +231,6 @@ router.post("/:roomId/join", async (request, response) => {
 
     if (room.status !== "active") throw new Error("ROOM_CLOSED");
     if (participantIds.includes(uid)) return;
-    if (participantIds.length >= Number(room.maxParticipants ?? 8)) throw new Error("ROOM_FULL");
 
     transaction.update(roomRef, {
       participantIds: FieldValue.arrayUnion(uid),
@@ -257,11 +249,6 @@ router.post("/:roomId/join", async (request, response) => {
 
     if (error instanceof Error && error.message === "ROOM_CLOSED") {
       response.status(409).json({ error: "La sala no esta activa." });
-      return;
-    }
-
-    if (error instanceof Error && error.message === "ROOM_FULL") {
-      response.status(409).json({ error: "La sala ya alcanzo el maximo de participantes." });
       return;
     }
 

@@ -14,6 +14,12 @@ const origins = (process.env.ORIGIN ? process.env.ORIGIN.split(",") : defaultOri
   .filter(Boolean);
 
 const port = Number(process.env.PORT ?? 3000);
+const institutionalEmailDomain = "@correounivalle.edu.co";
+const maxMessageLength = 2000;
+
+const isInstitutionalEmail = (email: string | null | undefined) => {
+  return Boolean(email?.trim().toLowerCase().endsWith(institutionalEmailDomain));
+};
 
 const openApiDocument = {
   openapi: "3.0.3",
@@ -407,7 +413,13 @@ io.use(async (socket, next) => {
 
   try {
     const decoded = await admin.auth().verifyIdToken(token);
+    if (!isInstitutionalEmail(decoded.email ?? null)) {
+      next(new Error(`Usa tu correo institucional ${institutionalEmailDomain}.`));
+      return;
+    }
+
     socket.data.uid = decoded.uid;
+    socket.data.email = decoded.email ?? null;
     next();
   } catch {
     next(new Error("No autorizado"));
@@ -454,6 +466,37 @@ const roomUsers = new Map<string, OnlineUser[]>();
 
 const sanitizePresenceField = (value: unknown, maxLength: number) => {
   return typeof value === "string" ? value.trim().slice(0, maxLength) || undefined : undefined;
+};
+
+const loadAccessibleRoom = async (roomId: string, uid: string) => {
+  const roomRef = db.collection("rooms").doc(roomId);
+  const roomSnapshot = await roomRef.get();
+
+  if (!roomSnapshot.exists) {
+    return { ok: false as const, message: "Sala no encontrada." };
+  }
+
+  const room = roomSnapshot.data() ?? {};
+  const participantIds = Array.isArray(room.participantIds) ? room.participantIds.map(String) : [];
+  const isParticipant = room.ownerId === uid || participantIds.includes(uid);
+
+  if (!isParticipant) {
+    return { ok: false as const, message: "No tienes acceso a esta sala." };
+  }
+
+  if (room.status !== "active") {
+    return { ok: false as const, message: "La sala no esta activa." };
+  }
+
+  return { ok: true as const, roomRef, room };
+};
+
+const isSocketInRoom = (socket: Socket, roomId: string) => {
+  return socket.rooms.has(roomId);
+};
+
+const isTargetSocketInRoom = (targetSocketId: string, roomId: string) => {
+  return Boolean(io.sockets.sockets.get(targetSocketId)?.rooms.has(roomId));
 };
 
 const emitRoomUsers = (roomId: string) => {
@@ -520,24 +563,19 @@ io.on("connection", (socket: Socket) => {
       return;
     }
 
+    if (trimmedMessage.length > maxMessageLength) {
+      socket.emit("chat:error", { message: `El mensaje no puede superar ${maxMessageLength} caracteres.` });
+      return;
+    }
+
     try {
-      const roomRef = db.collection("rooms").doc(roomId);
-      const roomSnapshot = await roomRef.get();
-
-      if (!roomSnapshot.exists) {
-        socket.emit("chat:error", { message: "Sala no encontrada." });
+      const roomAccess = await loadAccessibleRoom(roomId, uid);
+      if (!roomAccess.ok) {
+        socket.emit("chat:error", { message: roomAccess.message });
         return;
       }
 
-      const room = roomSnapshot.data() ?? {};
-      const participantIds = Array.isArray(room.participantIds) ? room.participantIds.map(String) : [];
-
-      if (room.ownerId !== uid && !participantIds.includes(uid)) {
-        socket.emit("chat:error", { message: "No tienes acceso a esta sala." });
-        return;
-      }
-
-      const messageRef = roomRef.collection("messages").doc();
+      const messageRef = roomAccess.roomRef.collection("messages").doc();
       const createdAt = FieldValue.serverTimestamp();
 
       await messageRef.set({
@@ -565,7 +603,7 @@ io.on("connection", (socket: Socket) => {
     }
   });
 
-  socket.on("room:join", (payload: RoomPayload) => {
+  socket.on("room:join", async (payload: RoomPayload) => {
     const roomId = payload?.roomId?.trim();
     const displayName = sanitizePresenceField(payload?.displayName, 80);
     const avatar = sanitizePresenceField(payload?.avatar, 8);
@@ -575,7 +613,13 @@ io.on("connection", (socket: Socket) => {
       return;
     }
 
-    socket.join(roomId);
+    const roomAccess = await loadAccessibleRoom(roomId, uid);
+    if (!roomAccess.ok) {
+      socket.emit("room:error", { message: roomAccess.message });
+      return;
+    }
+
+    await socket.join(roomId);
 
     const currentRoomUsers = roomUsers.get(roomId) ?? [];
     const nextRoomUsers = [
@@ -612,6 +656,11 @@ io.on("connection", (socket: Socket) => {
     const roomId = payload?.roomId?.trim();
 
     if (!roomId || !uid) {
+      return;
+    }
+
+    if (!isSocketInRoom(socket, roomId)) {
+      socket.emit("room:error", { message: "Debes estar en la sala para actualizar tu estado." });
       return;
     }
 
@@ -677,6 +726,11 @@ io.on("connection", (socket: Socket) => {
       return;
     }
 
+    if (!isSocketInRoom(socket, roomId) || !isTargetSocketInRoom(targetSocketId, roomId)) {
+      socket.emit("webrtc:error", { message: "La conexion WebRTC requiere participantes de la misma sala." });
+      return;
+    }
+
     socket.to(targetSocketId).emit("webrtc:offer", {
       roomId,
       fromSocketId: socket.id,
@@ -694,6 +748,11 @@ io.on("connection", (socket: Socket) => {
       return;
     }
 
+    if (!isSocketInRoom(socket, roomId) || !isTargetSocketInRoom(targetSocketId, roomId)) {
+      socket.emit("webrtc:error", { message: "La conexion WebRTC requiere participantes de la misma sala." });
+      return;
+    }
+
     socket.to(targetSocketId).emit("webrtc:answer", {
       roomId,
       fromSocketId: socket.id,
@@ -707,6 +766,10 @@ io.on("connection", (socket: Socket) => {
     const targetSocketId = payload?.targetSocketId?.trim();
 
     if (!roomId || !targetSocketId || !payload.candidate) {
+      return;
+    }
+
+    if (!isSocketInRoom(socket, roomId) || !isTargetSocketInRoom(targetSocketId, roomId)) {
       return;
     }
 
