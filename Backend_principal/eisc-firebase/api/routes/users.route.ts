@@ -55,6 +55,7 @@ router.put("/me", async (request, response) => {
     ...incoming,
     uid,
     email: incoming.email ?? currentProfile?.email ?? email,
+    profileCompleted: Boolean(nextUsername || currentProfile?.username || currentProfile?.profileCompleted || incoming.profileCompleted),
     updatedAt: now,
     ...(currentSnapshot.exists ? {} : { createdAt: now }),
     ...(nextUsername ? { username: nextUsername, profileCompleted: true } : {}),
