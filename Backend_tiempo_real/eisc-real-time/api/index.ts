@@ -649,6 +649,7 @@ io.on("connection", (socket: Socket) => {
     const nextRoomUsers = (roomUsers.get(roomId) ?? []).filter(user => user.socketId !== socket.id);
     roomUsers.set(roomId, nextRoomUsers);
     emitRoomUsers(roomId);
+    io.to(roomId).emit("webrtc:peer-left", { roomId, socketId: socket.id, userId: uid });
     console.log("User left room:", roomId, "socket:", socket.id);
   });
 
